@@ -1,0 +1,81 @@
+# Ensure Az.KeyVault is available
+if (-not (Get-Module -ListAvailable -Name Az.KeyVault)) {
+    Write-Host "Az module not found. Installing Az module..."
+    Install-Module -Name Az -Force -Scope CurrentUser -AllowClobber
+}
+
+Write-Host "Importing Az.KeyVault module..."
+Import-Module Az.KeyVault -Force
+
+function Enable-KeyVaultFirewallForAgent {
+    param([string]$KeyVaultName)
+
+    Write-Host "Starting to enable firewall for Key Vault: $KeyVaultName"
+
+    try {
+        Write-Host "Fetching public IP..."
+        $agentIp = (Invoke-RestMethod -Uri "https://api.ipify.org?format=json").ip
+        $iprange = "$agentIp/32"
+        Write-Host "Public IP obtained: $iprange"
+
+        Write-Host "Retrieving existing firewall rules..."
+        $vault = Get-AzKeyVault -VaultName $KeyVaultName
+        $existing = $vault.NetworkAcls.IpAddressRanges
+
+        if (-not ($existing -contains $iprange)) {
+            Write-Host "IP $iprange not found in firewall rules. Adding..."
+            $updated = $existing + $iprange
+
+            Update-AzKeyVaultNetworkRuleSet -VaultName $KeyVaultName `
+                -IpAddressRange $updated `
+                -DefaultAction $vault.NetworkAcls.DefaultAction `
+                -Bypass $vault.NetworkAcls.Bypass | Out-Null
+
+            Write-Host "Successfully added $iprange to Key Vault $KeyVaultName"
+        }
+        else {
+            Write-Host "IP $iprange is already allowed in Key Vault $KeyVaultName"
+        }
+
+        return $iprange
+    }
+    catch {
+        Write-Host "Error enabling firewall rule for $KeyVaultName: $_"
+        throw
+    }
+}
+
+function Disable-KeyVaultFirewallForAgent {
+    param(
+        [string]$KeyVaultName,
+        [string]$iprange
+    )
+
+    Write-Host "Starting to disable firewall for IP $iprange on Key Vault: $KeyVaultName"
+
+    try {
+        $vault = Get-AzKeyVault -VaultName $KeyVaultName
+        $existing = $vault.NetworkAcls.IpAddressRanges
+
+        if ($existing -contains $iprange) {
+            Write-Host "IP $iprange found. Removing from allowed IPs..."
+            $cleaned = $existing | Where-Object { $_ -ne $iprange }
+
+            Update-AzKeyVaultNetworkRuleSet -VaultName $KeyVaultName `
+                -IpAddressRange $cleaned `
+                -DefaultAction $vault.NetworkAcls.DefaultAction `
+                -Bypass $vault.NetworkAcls.Bypass | Out-Null
+
+            Write-Host "Successfully removed $iprange from Key Vault $KeyVaultName"
+        }
+        else {
+            Write-Host "IP $iprange was not present in Key Vault $KeyVaultName. Skipping removal."
+        }
+    }
+    catch {
+        Write-Host "Error disabling firewall rule for $KeyVaultName: $_"
+        throw
+    }
+}
+
+Export-ModuleMember -Function Enable-KeyVaultFirewallForAgent, Disable-KeyVaultFirewallForAgent
